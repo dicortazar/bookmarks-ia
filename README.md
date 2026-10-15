@@ -2,7 +2,7 @@
 
 Funciona en dos partes:
 
-1. **Desde el móvil** compartes un enlace con la app. El enlace queda en `Bookmarks IA/Pendientes` de tu Google Drive.
+1. **Desde el móvil** compartes un enlace con la app. El enlace se añade a `Bookmarks IA/bookmarks-ia-cola.json` en tu Google Drive.
 2. **Cada noche a las 02:55** una tarea programada de Claude procesa los pendientes. Lee cada página y redacta título, resumen, puntos clave y etiquetas. Después crea una ficha PDF y escribe un resumen de todo lo nuevo. Funciona aunque tengas el móvil apagado.
 
 En la app ves:
@@ -13,11 +13,12 @@ En la app ves:
 No necesita API key de Claude: usa tu suscripción.
 
 ## Estructura en Drive
+La crea Claude (no la app), para que la tarea nocturna pueda leerla y escribir en ella:
 ```
 Bookmarks IA/
-  Pendientes/   ← la app (un .json por enlace)
-  Fichas/       ← la tarea (PDF + JSON por documento)
-  Resúmenes/    ← la tarea (un JSON por noche)
+  bookmarks-ia-cola.json  ← cola de enlaces (la app añade y limpia lo ya procesado)
+  Fichas/                 ← la tarea: "<fecha> <título> [id].pdf" + ".json"; "ERROR [id].json" si falla
+  Resúmenes/              ← la tarea: un JSON por ejecución
 ```
 
 ## Puesta en marcha (una sola vez)
@@ -35,9 +36,7 @@ Bookmarks IA/
    - Authorized JavaScript origins: `https://<usuario>.github.io`
 5. Copia el Client ID.
 
-La app pide dos permisos:
-- `drive.file`, para crear sus carpetas y los pendientes.
-- `drive.readonly`, para leer las fichas que crea la tarea nocturna.
+La app pide el permiso `drive` (ver y editar tus archivos de Drive), porque tiene que escribir en la cola y leer las fichas, que crea Claude y no la app. En la práctica solo toca la carpeta `Bookmarks IA`.
 
 Al conectar, Google mostrará el aviso de "app no verificada". Es normal en una app personal en modo Testing: pulsa *Continuar*.
 

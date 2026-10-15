@@ -1,11 +1,13 @@
 'use strict';
 /*
  * Bookmarks IA — bandeja de enlaces + visor.
- * Estructura en Google Drive:
- *   Bookmarks IA/            (lo crea esta app)
- *     Pendientes/            (lo crea esta app) un .json por enlace guardado
- *     Fichas/                (lo crea la tarea nocturna) <nombre>.pdf + <nombre>.json por documento
- *     Resúmenes/             (lo crea la tarea nocturna) resumen-AAAA-MM-DD.json por noche
+ * Estructura en Google Drive (la crea Claude, no esta app):
+ *   Bookmarks IA/
+ *     bookmarks-ia-cola.json   cola de enlaces: [{id, url, addedAt}]  ← la app añade y limpia
+ *     Fichas/                  "<fecha> <título> [id].pdf" + ".json" por documento;
+ *                              "ERROR [id].json" si no se pudo leer la página
+ *     Resúmenes/               resumen-AAAA-MM-DD-HHMM.json por ejecución
+ * La app necesita el permiso "drive" porque estos archivos no los crea ella.
  */
 
 /* ---------- Utilidades ---------- */
@@ -15,14 +17,15 @@ const LS = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
-const ROOT = 'Bookmarks IA', PENDING = 'Pendientes', CARDS = 'Fichas', DIGESTS = 'Resúmenes';
+const QUEUE_NAME = 'bookmarks-ia-cola.json', CARDS = 'Fichas', DIGESTS = 'Resúmenes';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+const SCOPES = 'https://www.googleapis.com/auth/drive';
+const V = 'v3:'; // prefijo de claves; cambiarlo fuerza a reconectar y relocalizar
 
 let settings = Object.assign({ clientId: '' }, LS.get('settings', {}));
-let docs = LS.get('docs-cache', {});          // fileId -> ficha
-let digest = LS.get('digest-cache', null);
-let pending = LS.get('pending-cache', []);
+let docs = LS.get(V + 'docs', {});        // fileId -> ficha
+let digest = LS.get(V + 'digest', null);
+let pending = LS.get(V + 'pending', []);  // [{id,url,addedAt,error?,errorFileId?}]
 let activeTag = null;
 let busyFlag = false;
 
@@ -42,7 +45,8 @@ function normalizeUrl(s) {
 }
 function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } }
 function fmtDate(s) { const d = new Date(s); return isNaN(d) ? (s || '') : d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }); }
-const q = (s) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+function shortId() { const a = new Uint8Array(6); crypto.getRandomValues(a); return [...a].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 8); }
+const idInName = (name) => { const m = /\[([a-z0-9]{4,16})\]/i.exec(name || ''); return m ? m[1] : null; };
 
 /* ---------- Google: autenticación ---------- */
 let tokenClient = null;
@@ -53,7 +57,7 @@ function initGoogle() {
   tokenClient._cid = settings.clientId;
   return true;
 }
-function cachedToken() { const t = LS.get('gtoken'); return t && t.exp > Date.now() + 60000 ? t.value : null; }
+function cachedToken() { const t = LS.get(V + 'gtoken'); return t && t.exp > Date.now() + 60000 ? t.value : null; }
 // Llamar de forma síncrona dentro de un toque del usuario: puede abrir la ventana de Google.
 function getToken() {
   const t = cachedToken();
@@ -63,12 +67,13 @@ function getToken() {
   return new Promise((resolve, reject) => {
     tokenClient.callback = (r) => {
       if (r.error) return reject(new Error('Google: ' + r.error));
-      LS.set('gtoken', { value: r.access_token, exp: Date.now() + Number(r.expires_in || 3600) * 1000 });
-      LS.set('gconsented', true);
+      if (!google.accounts.oauth2.hasGrantedAllScopes(r, SCOPES)) return reject(new Error('Hace falta aceptar el permiso de Google Drive.'));
+      LS.set(V + 'gtoken', { value: r.access_token, exp: Date.now() + Number(r.expires_in || 3600) * 1000 });
+      LS.set(V + 'gconsented', true);
       resolve(r.access_token);
     };
     tokenClient.error_callback = (e) => reject(new Error('Google: ' + ((e && e.type) || 'no se pudo iniciar sesión')));
-    tokenClient.requestAccessToken({ prompt: LS.get('gconsented') ? '' : 'consent' });
+    tokenClient.requestAccessToken({ prompt: LS.get(V + 'gconsented') ? '' : 'consent' });
   });
 }
 
@@ -77,7 +82,8 @@ async function drive(path, { method = 'GET', body, headers = {}, upload = false,
   const token = await getToken();
   const base = upload ? 'https://www.googleapis.com/upload/drive/v3/' : 'https://www.googleapis.com/drive/v3/';
   const res = await fetch(base + path, { method, body, headers: { Authorization: 'Bearer ' + token, ...headers } });
-  if (res.status === 401) { LS.del('gtoken'); throw new Error('La sesión de Google ha caducado. Pulsa ⟳ para reconectar.'); }
+  if (res.status === 401) { LS.del(V + 'gtoken'); throw new Error('La sesión de Google ha caducado. Pulsa ⟳ para reconectar.'); }
+  if (res.status === 404) { LS.del(V + 'loc'); }
   if (!res.ok) throw new Error('Drive ' + res.status + ': ' + (await res.text()).slice(0, 200));
   if (raw) return res;
   return res.status === 204 ? null : res.json();
@@ -92,30 +98,31 @@ async function listFiles(query, fields = 'id,name,mimeType,modifiedTime,webViewL
   } while (pageToken);
   return out;
 }
-async function findFolder(name, parent) {
-  const r = await listFiles(`name='${q(name)}' and mimeType='${FOLDER_MIME}' and trashed=false` + (parent ? ` and '${parent}' in parents` : ` and 'root' in parents`), 'id');
-  return r[0] ? r[0].id : null;
-}
-async function createFolder(name, parent) {
-  const r = await drive('files?fields=id', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: FOLDER_MIME, ...(parent ? { parents: [parent] } : {}) }),
-  });
-  return r.id;
-}
-// Carpetas propias de la app (raíz y Pendientes). Se crean aquí para que la app tenga permiso de escritura.
-async function folders() {
-  let f = LS.get('folders');
-  if (f && f.root && f.pending) return f;
-  const root = (await findFolder(ROOT)) || (await createFolder(ROOT));
-  const pend = (await findFolder(PENDING, root)) || (await createFolder(PENDING, root));
-  f = { root, pending: pend };
-  LS.set('folders', f);
-  return f;
+// Localiza la cola y las carpetas (creadas por Claude).
+async function locate() {
+  let loc = LS.get(V + 'loc');
+  if (loc && loc.queue) return loc;
+  const qs = await listFiles(`name='${QUEUE_NAME}' and trashed=false`, 'id,parents,createdTime');
+  if (!qs.length) throw new Error('No encuentro "Bookmarks IA" en tu Drive. Pide a Claude que cree la estructura.');
+  qs.sort((a, b) => String(b.createdTime).localeCompare(String(a.createdTime)));
+  const root = qs[0].parents && qs[0].parents[0];
+  const sub = await listFiles(`'${root}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`, 'id,name');
+  const byName = Object.fromEntries(sub.map((f) => [f.name.normalize('NFC'), f.id]));
+  loc = { queue: qs[0].id, root, cards: byName[CARDS.normalize('NFC')] || null, digests: byName[DIGESTS.normalize('NFC')] || null };
+  LS.set(V + 'loc', loc);
+  return loc;
 }
 async function readJson(fileId) {
   const res = await drive(`files/${fileId}?alt=media`, { raw: true });
-  return res.json();
+  const txt = await res.text();
+  return txt.trim() ? JSON.parse(txt) : null;
+}
+async function readQueue() { const l = await locate(); const d = await readJson(l.queue); return Array.isArray(d) ? d : []; }
+async function writeQueue(list) {
+  const l = await locate();
+  await drive(`files/${l.queue}?uploadType=media`, {
+    method: 'PATCH', upload: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(list, null, 1),
+  });
 }
 async function pool(items, n, fn) {
   const out = []; let i = 0;
@@ -137,17 +144,12 @@ async function addLink(rawUrl) {
   setBusy(true);
   try {
     await tokenP;
-    const f = await folders();
-    const item = { url, addedAt: new Date().toISOString() };
-    const b = 'bm' + Math.random().toString(36).slice(2);
-    const meta = { name: item.addedAt.replace(/[:.]/g, '-') + '.json', parents: [f.pending], mimeType: 'application/json' };
-    const body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n` +
-      `--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(item)}\r\n--${b}--`;
-    const r = await drive('files?uploadType=multipart&fields=id,name', {
-      method: 'POST', upload: true, headers: { 'Content-Type': 'multipart/related; boundary=' + b }, body,
-    });
-    pending = [{ id: r.id, name: r.name, url }, ...pending];
-    LS.set('pending-cache', pending);
+    const item = { id: shortId(), url, addedAt: new Date().toISOString() };
+    const queue = await readQueue();
+    queue.push(item);
+    await writeQueue(queue);
+    pending = [item, ...pending.filter((p) => p.id !== item.id)];
+    LS.set(V + 'pending', pending);
     $('#url').value = '';
     render();
     setStatus('Guardado ✓ Se procesará esta noche.');
@@ -158,14 +160,18 @@ async function addLink(rawUrl) {
   }
 }
 
-async function removePending(id) {
-  const p = getToken();
+async function removePending(p) {
+  const tp = getToken();
   setBusy(true);
   try {
-    await p;
-    await drive(`files/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
-    pending = pending.filter((x) => x.id !== id);
-    LS.set('pending-cache', pending);
+    await tp;
+    const queue = await readQueue();
+    await writeQueue(queue.filter((x) => x.id !== p.id));
+    if (p.errorFileId) {
+      await drive(`files/${p.errorFileId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
+    }
+    pending = pending.filter((x) => x.id !== p.id);
+    LS.set(V + 'pending', pending);
     render();
   } catch (e) { setStatus(e.message, true); } finally { setBusy(false); }
 }
@@ -173,36 +179,33 @@ async function removePending(id) {
 async function sync(interactive) {
   if (busyFlag) return;
   if (!interactive && !cachedToken()) return;
-  const p = getToken();
+  const tp = getToken();
   setBusy(true);
   try {
-    await p;
+    await tp;
     setStatus('Sincronizando…');
-    const f = await folders();
-
-    // Pendientes (los que fallaron llevan "ERROR" en el nombre)
-    const pend = await listFiles(`'${f.pending}' in parents and trashed=false`, 'id,name');
-    const pendData = await pool(pend.filter((x) => !pending.some((p) => p.id === x.id && p.url)), 6, (x) => readJson(x.id));
-    const byId = Object.fromEntries(pending.map((p) => [p.id, p]));
-    let k = 0;
-    pending = pend.map((x) => {
-      const cached = byId[x.id] && byId[x.id].url ? byId[x.id] : { url: (pendData[k++] || {}).url || '' };
-      return { id: x.id, name: x.name, url: cached.url, error: /error/i.test(x.name) };
-    });
-    LS.set('pending-cache', pending);
+    let loc = await locate();
+    if (!loc.cards || !loc.digests) { LS.del(V + 'loc'); loc = await locate(); }
 
     // Fichas: solo se descargan las nuevas o modificadas
-    const cardsFolder = await findFolder(CARDS, f.root);
-    if (cardsFolder) {
-      const files = await listFiles(`'${cardsFolder}' in parents and trashed=false`);
+    const errors = {};   // entryId -> fileId del marcador de error
+    const doneIds = new Set();
+    if (loc.cards) {
+      const files = await listFiles(`'${loc.cards}' in parents and trashed=false`);
       const pdfByBase = {};
       files.filter((x) => x.mimeType === 'application/pdf').forEach((x) => { pdfByBase[x.name.replace(/\.pdf$/i, '')] = x; });
       const jsons = files.filter((x) => /\.json$/i.test(x.name));
-      const todo = jsons.filter((x) => !docs[x.id] || docs[x.id]._mod !== x.modifiedTime);
-      setStatus(`Sincronizando ${todo.length} documento(s)…`);
+      jsons.forEach((x) => {
+        const id = idInName(x.name);
+        if (!id) return;
+        if (/^ERROR\b/i.test(x.name)) errors[id] = x.id; else doneIds.add(id);
+      });
+      const cardsJson = jsons.filter((x) => !/^ERROR\b/i.test(x.name));
+      const todo = cardsJson.filter((x) => !docs[x.id] || docs[x.id]._mod !== x.modifiedTime);
+      if (todo.length) setStatus(`Descargando ${todo.length} documento(s)…`);
       const got = await pool(todo, 6, (x) => readJson(x.id));
       const next = {};
-      jsons.forEach((x) => {
+      cardsJson.forEach((x) => {
         const fresh = got[todo.indexOf(x)];
         const d = fresh ? { ...fresh, _mod: x.modifiedTime } : docs[x.id];
         if (!d) return;
@@ -211,17 +214,23 @@ async function sync(interactive) {
         next[x.id] = d;
       });
       docs = next;
-      LS.set('docs-cache', docs);
+      LS.set(V + 'docs', docs);
     }
 
+    // Cola: quita lo ya procesado y marca los errores
+    const queue = await readQueue();
+    const left = queue.filter((x) => !doneIds.has(x.id));
+    if (left.length !== queue.length) await writeQueue(left);
+    pending = left.slice().reverse().map((x) => ({ ...x, error: !!errors[x.id], errorFileId: errors[x.id] || null }));
+    LS.set(V + 'pending', pending);
+
     // Último resumen
-    const digFolder = await findFolder(DIGESTS, f.root);
-    if (digFolder) {
-      const ds = await listFiles(`'${digFolder}' in parents and trashed=false`, 'id,name,modifiedTime');
+    if (loc.digests) {
+      const ds = await listFiles(`'${loc.digests}' in parents and trashed=false`, 'id,name,modifiedTime');
       ds.sort((a, b) => b.name.localeCompare(a.name));
       if (ds[0] && (!digest || digest._id !== ds[0].id || digest._mod !== ds[0].modifiedTime)) {
         digest = { ...(await readJson(ds[0].id)), _id: ds[0].id, _mod: ds[0].modifiedTime };
-        LS.set('digest-cache', digest);
+        LS.set(V + 'digest', digest);
       }
     }
     render();
@@ -258,9 +267,9 @@ function render() {
   $('#pendingList').replaceChildren(...pending.map((p) => {
     const li = document.createElement('li');
     if (p.error) li.className = 'err';
-    const s = document.createElement('span'); s.textContent = (p.error ? '⚠ ' : '') + (p.url || p.name);
+    const s = document.createElement('span'); s.textContent = (p.error ? '⚠ ' : '') + p.url;
     const del = document.createElement('button'); del.textContent = 'Quitar';
-    del.onclick = () => { if (confirm('¿Quitar este enlace de la cola?')) removePending(p.id); };
+    del.onclick = () => { if (confirm('¿Quitar este enlace de la cola?')) removePending(p); };
     li.append(s, del);
     return li;
   }));
@@ -313,7 +322,7 @@ function readSettingsForm() {
   const prev = settings.clientId;
   settings = { clientId: $('#clientId').value.trim() };
   LS.set('settings', settings);
-  if (prev !== settings.clientId) ['gtoken', 'gconsented', 'folders'].forEach(LS.del);
+  if (prev !== settings.clientId) ['gtoken', 'gconsented', 'loc'].forEach((k) => LS.del(V + k));
 }
 
 function sharedUrl() {
@@ -341,6 +350,8 @@ window.addEventListener('DOMContentLoaded', () => {
     $('#url').value = shared;
     if (cachedToken()) addLink(shared);   // sesión activa: se guarda sola
     else setStatus('Enlace recibido. Pulsa Guardar.');
+  } else if (settings.clientId && !cachedToken()) {
+    setStatus('Pulsa ⟳ para conectar con Google Drive.');
   } else {
     sync(false);
   }
