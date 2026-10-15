@@ -1,52 +1,49 @@
-# Bookmarks IA
+# Bookmarks AI
 
-Funciona en dos partes:
+Two parts:
 
-1. **Desde el móvil** compartes un enlace con la app. El enlace se añade a `Bookmarks IA/bookmarks-ia-cola.json` en tu Google Drive.
-2. **Cada noche a las 02:55** una tarea programada de Claude procesa los pendientes. Lee cada página y redacta título, resumen, puntos clave y etiquetas. Después crea una ficha PDF y escribe un resumen de todo lo nuevo. Funciona aunque tengas el móvil apagado.
+1. **On your phone** you share a link with the app. It is appended to `Bookmarks AI/bookmarks-queue.json` in your Google Drive.
+2. **Every night at 02:55 (Madrid)** a Claude scheduled task processes the queue: it reads each page, writes a title, summary, key points and tags, builds a PDF card, and writes a digest of everything new. Your phone can be off.
 
-En la app ves:
-- **Lo último**: la síntesis de lo procesado en la última noche.
-- **Pendientes**: lo que aún no se ha procesado. Los que fallaron aparecen con ⚠.
-- **Documentos**: todos los procesados, con buscador, filtro por etiquetas y detalle de cada uno (resumen, puntos clave, abrir página, ver PDF).
+In the app you see:
+- **Latest** — the digest of the most recent run.
+- **Pending** — links not processed yet; failed ones show ⚠.
+- **Documents** — everything processed, with search, tag filters and a detail view (summary, key points, open page, view PDF).
 
-No necesita API key de Claude: usa tu suscripción.
+No Claude API key needed: it runs on your Claude subscription.
 
-## Estructura en Drive
-La crea Claude (no la app), para que la tarea nocturna pueda leerla y escribir en ella:
+## Drive layout
+Created by Claude (not by the app) so the scheduled task can read and write it:
 ```
-Bookmarks IA/
-  bookmarks-ia-cola.json  ← cola de enlaces (la app añade y limpia lo ya procesado)
-  Fichas/                 ← la tarea: "<fecha> <título> [id].pdf" + ".json"; "ERROR [id].json" si falla
-  Resúmenes/              ← la tarea: un JSON por ejecución
+Bookmarks AI/
+  bookmarks-queue.json  ← link queue (the app appends and removes processed entries)
+  Cards/                ← the task: "<date> <title> [id].pdf" + ".json"; "ERROR [id].json" on failure
+  Digests/              ← the task: one JSON per run
 ```
 
-## Puesta en marcha (una sola vez)
+## Setup (once)
 
-### 1. Publicar la app en GitHub Pages
-1. Crea un repo (p. ej. `bookmarks-ia`) y sube el contenido de esta carpeta.
-2. Settings → Pages → Deploy from branch → `main` / root.
-3. URL: `https://<usuario>.github.io/bookmarks-ia/`.
+### 1. Publish on GitHub Pages
+1. Create a repo (e.g. `bookmarks-ia`) and upload this folder's contents.
+2. Settings → Pages → Deploy from a branch → `main` / root.
+3. URL: `https://<user>.github.io/bookmarks-ia/`.
 
-### 2. Client ID de Google
-1. En https://console.cloud.google.com crea un proyecto.
-2. APIs & Services → Library → activa **Google Drive API**.
-3. OAuth consent screen → External. Déjala en modo *Testing* y añade tu cuenta como **test user**.
-4. Credentials → Create credentials → OAuth client ID → **Web application**.
-   - Authorized JavaScript origins: `https://<usuario>.github.io`
-5. Copia el Client ID.
+### 2. Google Client ID
+1. In https://console.cloud.google.com create a project.
+2. APIs & Services → Library → enable **Google Drive API**.
+3. Google Auth Platform → Get started → Audience **External**; keep it in *Testing* and add your account as a **test user**.
+4. Clients → Create client → **Web application**; Authorized JavaScript origins: `https://<user>.github.io`.
+5. Copy the Client ID.
 
-La app pide el permiso `drive` (ver y editar tus archivos de Drive), porque tiene que escribir en la cola y leer las fichas, que crea Claude y no la app. En la práctica solo toca la carpeta `Bookmarks IA`.
+The app requests the `drive` scope (see and edit your Drive files) because it writes to the queue and reads cards that Claude created. In practice it only touches the `Bookmarks AI` folder. Google will show an "unverified app" warning — expected for a personal app in Testing mode; tap *Continue*.
 
-Al conectar, Google mostrará el aviso de "app no verificada". Es normal en una app personal en modo Testing: pulsa *Continuar*.
+### 3. On the phone
+1. Open the URL in Chrome → ⚙ → paste the Client ID → **Connect Google Drive**.
+2. Chrome menu → **Install app**.
+3. From any app: **Share → Bookmarks**.
 
-### 3. En el móvil
-1. Abre la URL en Chrome → ⚙ → pega el Client ID → **Conectar Google Drive**. Esto crea las carpetas.
-2. Menú de Chrome → **Instalar app**.
-3. Desde cualquier app: **Compartir → Bookmarks**.
-
-## Notas
-- La ficha PDF contiene título, enlace, fechas, etiquetas, resumen y puntos clave. No es una copia de la página. Si quieres la página completa, desde Chrome puedes usar *Compartir → Imprimir → Guardar como PDF* en la carpeta `Fichas`.
-- Las páginas que solo se ven con JavaScript o tras login pueden fallar. Quedan marcadas con ⚠ en Pendientes y puedes quitarlas.
-- También puedes preguntar a Claude directamente, por ejemplo: "¿qué guardé esta semana sobre OSPOs?".
-- `make_ficha.py` es el script que usa la tarea para generar las fichas. Se incluye solo como referencia.
+## Notes
+- The PDF is a card (title, link, dates, tags, summary, key points), not a copy of the page. For the full page, use Chrome's *Share → Print → Save as PDF*.
+- Pages that need JavaScript or a login may fail; they show ⚠ under Pending and you can remove them.
+- You can also ask Claude directly, e.g. "what did I save this week about OSPOs?".
+- `make_ficha.py` is the script the task uses to build cards (reference copy).

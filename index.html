@@ -1,36 +1,36 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Bookmarks IA</title>
+  <title>Bookmarks AI</title>
   <meta name="theme-color" content="#1f6f5c">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=5">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="app.js?v=4" defer></script>
+  <script src="app.js?v=5" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <h1>Bookmarks IA</h1>
+    <h1>Bookmarks AI</h1>
     <div class="topbar-actions">
-      <button id="syncBtn" class="icon-btn" title="Sincronizar con Drive" aria-label="Sincronizar">⟳</button>
-      <button id="settingsBtn" class="icon-btn" title="Ajustes" aria-label="Ajustes">⚙</button>
+      <button id="syncBtn" class="icon-btn" title="Sync with Drive" aria-label="Sync">⟳</button>
+      <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
     </div>
   </header>
 
   <main>
     <form id="addForm" class="card add">
-      <input id="url" type="url" inputmode="url" placeholder="Pega una URL o compártela desde otra app" autocomplete="off" required>
-      <button id="addBtn" type="submit" class="primary">Guardar</button>
+      <input id="url" type="url" inputmode="url" placeholder="Paste a URL or share it from another app" autocomplete="off" required>
+      <button id="addBtn" type="submit" class="primary">Save</button>
     </form>
     <p id="status" class="status" role="status" aria-live="polite"></p>
 
     <section id="digest" class="card digest" hidden>
       <div class="section-head">
-        <h2>Lo último</h2>
+        <h2>Latest</h2>
         <span id="digestDate" class="meta"></span>
       </div>
       <p id="digestText" class="summary"></p>
@@ -41,23 +41,23 @@
       <ul id="pendingList" class="plain"></ul>
     </details>
 
-    <h2 class="list-title">Documentos <span id="docCount" class="meta"></span></h2>
-    <input id="search" type="search" class="search" placeholder="Buscar en títulos, resúmenes y etiquetas">
+    <h2 class="list-title">Documents <span id="docCount" class="meta"></span></h2>
+    <input id="search" type="search" class="search" placeholder="Search titles, summaries and tags">
     <div id="tags" class="chips"></div>
     <ul id="list" class="list"></ul>
-    <p id="empty" class="empty" hidden>Aún no hay documentos procesados. Los enlaces que guardes se procesan cada noche.</p>
+    <p id="empty" class="empty" hidden>No processed documents yet. Links you save are processed every night.</p>
   </main>
 
   <dialog id="settings">
     <form method="dialog" class="dialog-body" id="settingsForm">
-      <h2>Ajustes</h2>
+      <h2>Settings</h2>
       <label>Google OAuth Client ID
         <input id="clientId" type="text" autocomplete="off" placeholder="xxxx.apps.googleusercontent.com">
       </label>
-      <p class="hint">Solo se guarda en este dispositivo. Los pasos para obtenerlo están en el README.</p>
+      <p class="hint">Stored on this device only. See the README for how to get one.</p>
       <div class="row">
-        <button type="button" id="connectBtn">Conectar Google Drive</button>
-        <button type="submit" value="save" class="primary">Guardar</button>
+        <button type="button" id="connectBtn">Connect Google Drive</button>
+        <button type="submit" value="save" class="primary">Save</button>
       </div>
     </form>
   </dialog>
@@ -71,9 +71,9 @@
       <p id="dSummary" class="summary"></p>
       <ul id="dPoints" class="points"></ul>
       <div class="row wrap">
-        <a id="dOpen" class="btn" target="_blank" rel="noopener">Abrir página</a>
-        <a id="dPdf" class="btn" target="_blank" rel="noopener">Ver PDF</a>
-        <button type="button" id="dClose" class="primary push">Cerrar</button>
+        <a id="dOpen" class="btn" target="_blank" rel="noopener">Open page</a>
+        <a id="dPdf" class="btn" target="_blank" rel="noopener">View PDF</a>
+        <button type="button" id="dClose" class="primary push">Close</button>
       </div>
     </div>
   </dialog>

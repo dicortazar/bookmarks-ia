@@ -1,29 +1,29 @@
 'use strict';
 /*
- * Bookmarks IA — bandeja de enlaces + visor.
- * Estructura en Google Drive (la crea Claude, no esta app):
- *   Bookmarks IA/
- *     bookmarks-ia-cola.json   cola de enlaces: [{id, url, addedAt}]  ← la app añade y limpia
- *     Fichas/                  "<fecha> <título> [id].pdf" + ".json" por documento;
- *                              "ERROR [id].json" si no se pudo leer la página
- *     Resúmenes/               resumen-AAAA-MM-DD-HHMM.json por ejecución
- * La app necesita el permiso "drive" porque estos archivos no los crea ella.
+ * Bookmarks AI — link inbox + reader.
+ * Google Drive layout (created by Claude, not by this app):
+ *   Bookmarks AI/
+ *     bookmarks-queue.json   link queue: [{id, url, addedAt}]  ← the app appends and cleans up
+ *     Cards/                 "<date> <title> [id].pdf" + ".json" per document;
+ *                            "ERROR [id].json" when the page could not be read
+ *     Digests/               digest-YYYY-MM-DD-HHMM.json per run
+ * The app needs the "drive" scope because it does not create these files itself.
  */
 
-/* ---------- Utilidades ---------- */
+/* ---------- Utilities ---------- */
 const $ = (s) => document.querySelector(s);
 const LS = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
-const QUEUE_NAME = 'bookmarks-ia-cola.json', CARDS = 'Fichas', DIGESTS = 'Resúmenes';
+const QUEUE_NAMES = ['bookmarks-queue.json', 'bookmarks-ia-cola.json'], CARDS = ['Cards', 'Fichas'], DIGESTS = ['Digests', 'Resúmenes'];
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const SCOPES = 'https://www.googleapis.com/auth/drive';
-const V = 'v3:'; // prefijo de claves; cambiarlo fuerza a reconectar y relocalizar
+const V = 'v3:'; // storage key prefix; changing it forces reconnect + relocate
 
 let settings = Object.assign({ clientId: '' }, LS.get('settings', {}));
-let docs = LS.get(V + 'docs', {});        // fileId -> ficha
+let docs = LS.get(V + 'docs', {});        // fileId -> card
 let digest = LS.get(V + 'digest', null);
 let pending = LS.get(V + 'pending', []);  // [{id,url,addedAt,error?,errorFileId?}]
 let activeTag = null;
@@ -44,11 +44,11 @@ function normalizeUrl(s) {
   return null;
 }
 function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } }
-function fmtDate(s) { const d = new Date(s); return isNaN(d) ? (s || '') : d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }); }
+function fmtDate(s) { const d = new Date(s); return isNaN(d) ? (s || '') : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }); }
 function shortId() { const a = new Uint8Array(6); crypto.getRandomValues(a); return [...a].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 8); }
 const idInName = (name) => { const m = /\[([a-z0-9]{4,16})\]/i.exec(name || ''); return m ? m[1] : null; };
 
-/* ---------- Google: autenticación ---------- */
+/* ---------- Google: auth ---------- */
 let tokenClient = null;
 function initGoogle() {
   if (!settings.clientId || !window.google || !google.accounts || !google.accounts.oauth2) return false;
@@ -58,21 +58,21 @@ function initGoogle() {
   return true;
 }
 function cachedToken() { const t = LS.get(V + 'gtoken'); return t && t.exp > Date.now() + 60000 ? t.value : null; }
-// Llamar de forma síncrona dentro de un toque del usuario: puede abrir la ventana de Google.
+// Call synchronously inside a user tap: it may open Google's sign-in window.
 function getToken() {
   const t = cachedToken();
   if (t) return Promise.resolve(t);
-  if (!settings.clientId) return Promise.reject(new Error('Configura el Google OAuth Client ID en Ajustes (⚙).'));
-  if (!initGoogle()) return Promise.reject(new Error('El inicio de sesión de Google aún no ha cargado. Inténtalo de nuevo.'));
+  if (!settings.clientId) return Promise.reject(new Error('Set your Google OAuth Client ID in Settings (⚙).'));
+  if (!initGoogle()) return Promise.reject(new Error('Google sign-in has not loaded yet. Please try again.'));
   return new Promise((resolve, reject) => {
     tokenClient.callback = (r) => {
       if (r.error) return reject(new Error('Google: ' + r.error));
-      if (!google.accounts.oauth2.hasGrantedAllScopes(r, SCOPES)) return reject(new Error('Hace falta aceptar el permiso de Google Drive.'));
+      if (!google.accounts.oauth2.hasGrantedAllScopes(r, SCOPES)) return reject(new Error('You need to grant the Google Drive permission.'));
       LS.set(V + 'gtoken', { value: r.access_token, exp: Date.now() + Number(r.expires_in || 3600) * 1000 });
       LS.set(V + 'gconsented', true);
       resolve(r.access_token);
     };
-    tokenClient.error_callback = (e) => reject(new Error('Google: ' + ((e && e.type) || 'no se pudo iniciar sesión')));
+    tokenClient.error_callback = (e) => reject(new Error('Google: ' + ((e && e.type) || 'sign-in failed')));
     tokenClient.requestAccessToken({ prompt: LS.get(V + 'gconsented') ? '' : 'consent' });
   });
 }
@@ -82,7 +82,7 @@ async function drive(path, { method = 'GET', body, headers = {}, upload = false,
   const token = await getToken();
   const base = upload ? 'https://www.googleapis.com/upload/drive/v3/' : 'https://www.googleapis.com/drive/v3/';
   const res = await fetch(base + path, { method, body, headers: { Authorization: 'Bearer ' + token, ...headers } });
-  if (res.status === 401) { LS.del(V + 'gtoken'); throw new Error('La sesión de Google ha caducado. Pulsa ⟳ para reconectar.'); }
+  if (res.status === 401) { LS.del(V + 'gtoken'); throw new Error('Your Google session expired. Tap ⟳ to reconnect.'); }
   if (res.status === 404) { LS.del(V + 'loc'); }
   if (!res.ok) throw new Error('Drive ' + res.status + ': ' + (await res.text()).slice(0, 200));
   if (raw) return res;
@@ -98,17 +98,18 @@ async function listFiles(query, fields = 'id,name,mimeType,modifiedTime,webViewL
   } while (pageToken);
   return out;
 }
-// Localiza la cola y las carpetas (creadas por Claude).
+// Find the queue and folders (created by Claude).
 async function locate() {
   let loc = LS.get(V + 'loc');
   if (loc && loc.queue) return loc;
-  const qs = await listFiles(`name='${QUEUE_NAME}' and trashed=false`, 'id,parents,createdTime');
-  if (!qs.length) throw new Error('No encuentro "Bookmarks IA" en tu Drive. Pide a Claude que cree la estructura.');
-  qs.sort((a, b) => String(b.createdTime).localeCompare(String(a.createdTime)));
+  const qs = await listFiles(`(${QUEUE_NAMES.map((n) => `name='${n}'`).join(' or ')}) and trashed=false`, 'id,name,parents,createdTime');
+  if (!qs.length) throw new Error('Cannot find "Bookmarks AI" in your Drive. Ask Claude to create the folder structure.');
+  qs.sort((a, b) => QUEUE_NAMES.indexOf(a.name) - QUEUE_NAMES.indexOf(b.name));
   const root = qs[0].parents && qs[0].parents[0];
   const sub = await listFiles(`'${root}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`, 'id,name');
   const byName = Object.fromEntries(sub.map((f) => [f.name.normalize('NFC'), f.id]));
-  loc = { queue: qs[0].id, root, cards: byName[CARDS.normalize('NFC')] || null, digests: byName[DIGESTS.normalize('NFC')] || null };
+  const pick = (names) => names.map((n) => byName[n.normalize('NFC')]).find(Boolean) || null;
+  loc = { queue: qs[0].id, root, cards: pick(CARDS), digests: pick(DIGESTS) };
   LS.set(V + 'loc', loc);
   return loc;
 }
@@ -132,14 +133,14 @@ async function pool(items, n, fn) {
   return out;
 }
 
-/* ---------- Acciones ---------- */
+/* ---------- Actions ---------- */
 async function addLink(rawUrl) {
   if (busyFlag) return;
   const url = normalizeUrl(rawUrl);
-  if (!url) return setStatus('Esa URL no parece válida.', true);
-  if (!settings.clientId) { openSettings(); return setStatus('Configura Google Drive primero.', true); }
+  if (!url) return setStatus('That does not look like a valid URL.', true);
+  if (!settings.clientId) { openSettings(); return setStatus('Set up Google Drive first.', true); }
   const known = Object.values(docs).some((d) => d.url === url) || pending.some((p) => p.url === url);
-  if (known && !confirm('Ya tienes este enlace guardado. ¿Guardarlo otra vez?')) return;
+  if (known && !confirm('You already saved this link. Save it again?')) return;
   const tokenP = getToken();
   setBusy(true);
   try {
@@ -152,7 +153,7 @@ async function addLink(rawUrl) {
     LS.set(V + 'pending', pending);
     $('#url').value = '';
     render();
-    setStatus('Guardado ✓ Se procesará esta noche.');
+    setStatus('Saved ✓ It will be processed tonight.');
   } catch (e) {
     setStatus(e.message, true);
   } finally {
@@ -183,12 +184,12 @@ async function sync(interactive) {
   setBusy(true);
   try {
     await tp;
-    setStatus('Sincronizando…');
+    setStatus('Syncing…');
     let loc = await locate();
     if (!loc.cards || !loc.digests) { LS.del(V + 'loc'); loc = await locate(); }
 
-    // Fichas: solo se descargan las nuevas o modificadas
-    const errors = {};   // entryId -> fileId del marcador de error
+    // Cards: only new or changed ones are downloaded
+    const errors = {};   // entryId -> error marker fileId
     const doneIds = new Set();
     if (loc.cards) {
       const files = await listFiles(`'${loc.cards}' in parents and trashed=false`);
@@ -202,7 +203,7 @@ async function sync(interactive) {
       });
       const cardsJson = jsons.filter((x) => !/^ERROR\b/i.test(x.name));
       const todo = cardsJson.filter((x) => !docs[x.id] || docs[x.id]._mod !== x.modifiedTime);
-      if (todo.length) setStatus(`Descargando ${todo.length} documento(s)…`);
+      if (todo.length) setStatus(`Downloading ${todo.length} document(s)…`);
       const got = await pool(todo, 6, (x) => readJson(x.id));
       const next = {};
       cardsJson.forEach((x) => {
@@ -217,14 +218,14 @@ async function sync(interactive) {
       LS.set(V + 'docs', docs);
     }
 
-    // Cola: quita lo ya procesado y marca los errores
+    // Queue: drop processed entries and flag errors
     const queue = await readQueue();
     const left = queue.filter((x) => !doneIds.has(x.id));
     if (left.length !== queue.length) await writeQueue(left);
     pending = left.slice().reverse().map((x) => ({ ...x, error: !!errors[x.id], errorFileId: errors[x.id] || null }));
     LS.set(V + 'pending', pending);
 
-    // Último resumen
+    // Latest digest
     if (loc.digests) {
       const ds = await listFiles(`'${loc.digests}' in parents and trashed=false`, 'id,name,modifiedTime');
       ds.sort((a, b) => b.name.localeCompare(a.name));
@@ -242,7 +243,7 @@ async function sync(interactive) {
   }
 }
 
-/* ---------- Interfaz ---------- */
+/* ---------- UI ---------- */
 function chip(text, onclick, active) {
   const c = document.createElement(onclick ? 'button' : 'span');
   c.className = 'chip' + (active ? ' active' : '');
@@ -252,29 +253,29 @@ function chip(text, onclick, active) {
 }
 
 function render() {
-  // Lo último
+  // Latest
   const hasDigest = digest && digest.text;
   $('#digest').hidden = !hasDigest;
   if (hasDigest) {
-    $('#digestDate').textContent = fmtDate(digest.date) + (digest.count ? ` · ${digest.count} nuevo(s)` : '');
+    $('#digestDate').textContent = fmtDate(digest.date) + (digest.count ? ` · ${digest.count} new` : '');
     $('#digestText').textContent = digest.text;
   }
 
-  // Pendientes
+  // Pending
   $('#pendingBox').hidden = pending.length === 0;
   const errs = pending.filter((p) => p.error).length;
-  $('#pendingCount').textContent = `${pending.length} enlace(s) pendiente(s) de procesar` + (errs ? ` · ${errs} con error` : '');
+  $('#pendingCount').textContent = `${pending.length} link(s) waiting to be processed` + (errs ? ` · ${errs} failed` : '');
   $('#pendingList').replaceChildren(...pending.map((p) => {
     const li = document.createElement('li');
     if (p.error) li.className = 'err';
     const s = document.createElement('span'); s.textContent = (p.error ? '⚠ ' : '') + p.url;
-    const del = document.createElement('button'); del.textContent = 'Quitar';
-    del.onclick = () => { if (confirm('¿Quitar este enlace de la cola?')) removePending(p); };
+    const del = document.createElement('button'); del.textContent = 'Remove';
+    del.onclick = () => { if (confirm('Remove this link from the queue?')) removePending(p); };
     li.append(s, del);
     return li;
   }));
 
-  // Documentos
+  // Documents
   const all = Object.values(docs).sort((a, b) => String(b.processed || b.added || '').localeCompare(String(a.processed || a.added || '')));
   const tagCount = new Map();
   all.forEach((d) => (d.tags || []).forEach((t) => tagCount.set(t, (tagCount.get(t) || 0) + 1)));
@@ -287,7 +288,7 @@ function render() {
     if (activeTag && !(d.tags || []).includes(activeTag)) return false;
     return !term || [d.title, d.summary, d.url, ...(d.tags || []), ...(d.key_points || [])].join(' ').toLowerCase().includes(term);
   });
-  $('#docCount').textContent = all.length ? `(${items.length}${items.length !== all.length ? ' de ' + all.length : ''})` : '';
+  $('#docCount').textContent = all.length ? `(${items.length}${items.length !== all.length ? ' of ' + all.length : ''})` : '';
   $('#list').replaceChildren(...items.map((d) => {
     const li = document.createElement('li');
     li.className = 'card item';
@@ -307,7 +308,7 @@ function render() {
 function openDetail(d) {
   $('#dTitle').textContent = d.title || d.url;
   $('#dUrl').textContent = d.url; $('#dUrl').href = d.url;
-  $('#dDate').textContent = 'Guardado ' + fmtDate(d.added) + ' · procesado ' + fmtDate(d.processed);
+  $('#dDate').textContent = 'Saved ' + fmtDate(d.added) + ' · processed ' + fmtDate(d.processed);
   $('#dTags').replaceChildren(...(d.tags || []).map((t) => chip(t)));
   $('#dSummary').textContent = d.summary || '';
   $('#dPoints').replaceChildren(...(d.key_points || []).map((k) => { const li = document.createElement('li'); li.textContent = k; return li; }));
@@ -348,10 +349,10 @@ window.addEventListener('DOMContentLoaded', () => {
   const shared = sharedUrl();
   if (shared) {
     $('#url').value = shared;
-    if (cachedToken()) addLink(shared);   // sesión activa: se guarda sola
-    else setStatus('Enlace recibido. Pulsa Guardar.');
+    if (cachedToken()) addLink(shared);   // active session: save straight away
+    else setStatus('Link received. Tap Save.');
   } else if (settings.clientId && !cachedToken()) {
-    setStatus('Pulsa ⟳ para conectar con Google Drive.');
+    setStatus('Tap ⟳ to connect to Google Drive.');
   } else {
     sync(false);
   }

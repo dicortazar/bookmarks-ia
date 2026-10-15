@@ -1,6 +1,6 @@
-"""Genera la ficha PDF de un marcador.
-Uso: python3 make_ficha.py entrada.json salida.pdf
-entrada.json: {"title","url","added","processed","tags":[...],"summary","key_points":[...]}
+"""Build the PDF card for a bookmark.
+Usage: python3 make_ficha.py input.json output.pdf
+input.json: {"title","url","added","processed","tags":[...],"summary","key_points":[...]}
 """
 import json, sys
 from xml.sax.saxutils import escape
@@ -22,13 +22,13 @@ e = lambda s: escape(str(s or ""))
 story = [
     Paragraph(e(d["title"]), title),
     Paragraph(f'<link href="{e(d["url"])}" color="#1f6f5c">{e(d["url"])}</link>', meta),
-    Paragraph(f'Guardado: {e(d.get("added"))} · Procesado: {e(d.get("processed"))}', meta),
-    Paragraph("Etiquetas: " + e(", ".join(d.get("tags", []))), meta),
+    Paragraph(f'Saved: {e(d.get("added"))} · Processed: {e(d.get("processed"))}', meta),
+    Paragraph("Tags: " + e(", ".join(d.get("tags", []))), meta),
     Spacer(1, 6), HRFlowable(width="100%", color=colors.HexColor("#dedbd2")),
-    Paragraph("Resumen", h), Paragraph(e(d.get("summary")), body),
+    Paragraph("Summary", h), Paragraph(e(d.get("summary")), body),
 ]
 if d.get("key_points"):
-    story += [Paragraph("Puntos clave", h),
+    story += [Paragraph("Key points", h),
               ListFlowable([ListItem(Paragraph(e(p), body), leftIndent=12) for p in d["key_points"]],
                            bulletType="bullet", start="•", leftIndent=12)]
 SimpleDocTemplate(sys.argv[2], pagesize=A4, leftMargin=18*mm, rightMargin=18*mm,
