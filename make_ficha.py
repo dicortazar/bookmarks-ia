@@ -31,5 +31,10 @@ if d.get("key_points"):
     story += [Paragraph("Key points", h),
               ListFlowable([ListItem(Paragraph(e(p), body), leftIndent=12) for p in d["key_points"]],
                            bulletType="bullet", start="•", leftIndent=12)]
+if d.get("sources"):
+    story += [Paragraph("Sources", h),
+              Paragraph(e(d.get("source_note") or "Summary based on these sources:"), meta),
+              ListFlowable([ListItem(Paragraph(f'<link href="{e(u)}" color="#1f6f5c">{e(u)}</link>', meta), leftIndent=12)
+                            for u in d["sources"]], bulletType="bullet", start="•", leftIndent=12)]
 SimpleDocTemplate(sys.argv[2], pagesize=A4, leftMargin=18*mm, rightMargin=18*mm,
                   topMargin=18*mm, bottomMargin=18*mm, title=d["title"]).build(story)
